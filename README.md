@@ -9,6 +9,18 @@ A pure Rust brush engine inspired by [libmypaint](https://github.com/mypaint/lib
 
 🎨 **[Try the live demo](https://reearth.github.io/hokusai/)** — draws in your browser using the real libmypaint brushes, with stylus pressure and tilt where the device supports it.
 
+> **⚠️ This is a fork, not upstream.** Maintained as the brush engine of
+> [mypaint-rs](https://github.com/Icey0111/mypaint-rs), a Rust port of MyPaint.
+> It is forked from upstream `f7e9981` (v0.3.0) and carries brush-engine parity
+> fixes plus a differential gate against the real libmypaint C engine.
+> Licensing is unchanged from upstream (**MIT OR Apache-2.0**) — libmypaint is
+> ISC, so byte-exact parity work carries no copyleft obligation. See
+> [NOTICE.md](NOTICE.md) for provenance and for what the GPL-3.0-or-later
+> application layer has to carry instead.
+> Nothing here has been offered back to [reearth/hokusai](https://github.com/reearth/hokusai)
+> yet — these engine fixes are meant to be upstreamable, and no changes have
+> been proposed so far.
+
 ## Goals
 
 - 🦀 **Pure Rust, no `unsafe`** — clean WASM (`wasm32-unknown-unknown`) story.
@@ -72,6 +84,44 @@ cargo run --example myb_to_png --features "tile-mem myb-json" -- \
 ## libmypaint parity
 
 **188 / 196 stock brushes (≈ 96 %) match libmypaint at MAD ≤ 0.5** under the brush-pack parity harness; the remaining 8 are inside MAD ≤ 4 and none are red. Measured against libmypaint v1.6.1 + the upstream [mypaint-brushes](https://github.com/mypaint/mypaint-brushes) pack via `cargo xtask brush-pack-report` (see [`CONTRIBUTING.md`](CONTRIBUTING.md#libmypaint-parity-testing) for the setup). Remaining gaps are tracked in [TODO](#todo).
+
+### This fork: a byte-exact gate against real libmypaint C
+
+The MAD harness above tolerates ≤0.5 per channel and needs json-c / GLib / pkg-config.
+This fork adds a stricter gate that needs none of them:
+[`crates/hokusai-compat/cref/`](crates/hokusai-compat/cref) compiles a libmypaint
+checkout you point it at (minimum `config.h` / `json.h` stubs; `build_ref.sh` for
+MinGW, `build_ref_msvc.bat` for MSVC), renders the same `.myb` + same event
+stream through C `ref_runner` and Rust `dump_fix15`, and compares RGBA u16 fix15
+output **byte for byte** (tolerance 0).
+
+Snapshot 2026-10-21, libmypaint `d5a88fb`, one standard script (56 events,
+pressure ramp over a sine path, 512×256):
+
+| Scope | bit-identical | differs | errors |
+|---|---|---|---|
+| `hokusai-compat` fixtures | 9 / 9 | 0 | 0 |
+| official brush pack | 144 / 196 | 52 | 0 |
+
+Of the 52: 32 have a max difference of ≤2 LSB (mostly alpha; state-filter and
+float last-bit effects), 20 exceed 2 LSB and cluster in the smudge / watercolor /
+oil / acrylic / scatter families, where per-dab state (`partial_dabs`, speed
+filters) diverges by 1 ULP and then amplifies. 12 brushes that use
+`surfacemap_x/y` are skipped and recorded: those keys are not libmypaint inputs
+and the reference asserts on them.
+
+These are **one script's numbers**, not a proof over the whole event space — they
+are meant to make "how far are we from upstream C" reproducible and bisectable.
+
+```sh
+# from the workspace root, with a libmypaint checkout at ../_libmypaint_ref
+bash  crates/hokusai-compat/cref/build_ref.sh
+cargo build --release -p hokusai-compat --bin dump_fix15
+python crates/hokusai-compat/cref/diff_gate.py \
+  --brushes <brush-pack>/brushes --script <script>.json --work <workdir> \
+  --ref <ref_runner.exe> --rust target/release/dump_fix15.exe \
+  --tolerance 0 --markdown gate.md
+```
 
 ## Features
 

@@ -98,6 +98,14 @@ as `<name>.actual.png` for inspection.
 
 ## libmypaint parity testing
 
+> **Fork note:** this fork also carries a stricter gate that needs none of the
+> setup below — `crates/hokusai-compat/cref/` compiles a libmypaint checkout you
+> point it at and compares the C and Rust canvas buffers **byte for byte**
+> (tolerance 0), with no json-c / GLib / pkg-config. See
+> [its README](crates/hokusai-compat/cref/README.md) and
+> [README § This fork: a byte-exact gate](README.md#this-fork-a-byte-exact-gate-against-real-libmypaint-c).
+> The MAD harness below is upstream's and allows ≤0.5 per channel.
+
 For checking hokusai against the real libmypaint reference, run
 
 ```sh
