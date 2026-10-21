@@ -53,90 +53,137 @@ pub struct Hsl {
     pub l: f32, // [0, 1]
 }
 
+// libmypaint uses the GIMP-derived float colour conversions in helpers.c.
+// Their rounding points are observable per dab: rgb_to_hsv runs in float
+// (with double `+6/+2/+4` and `/6.0`), the hsl helpers and the hsv->rgb
+// reconstruction run in double and narrow once per channel.
+
 pub fn rgb_to_hsv(r: f32, g: f32, b: f32) -> Hsv {
+    let r = r.clamp(0.0, 1.0);
+    let g = g.clamp(0.0, 1.0);
+    let b = b.clamp(0.0, 1.0);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let d = max - min;
+    let delta = max - min;
     let v = max;
-    let s = if max <= 0.0 { 0.0 } else { d / max };
-    let h = if d <= 0.0 {
-        0.0
-    } else if max == r {
-        ((g - b) / d).rem_euclid(6.0) / 6.0
-    } else if max == g {
-        ((b - r) / d + 2.0) / 6.0
+    if delta > 0.0001 {
+        let s = delta / max;
+        let mut h = if r == max {
+            let mut h = (g - b) / delta;
+            if h < 0.0 {
+                h = (h as f64 + 6.0) as f32;
+            }
+            h
+        } else if g == max {
+            (((b - r) / delta) as f64 + 2.0) as f32
+        } else {
+            (((r - g) / delta) as f64 + 4.0) as f32
+        };
+        h = (h as f64 / 6.0) as f32;
+        Hsv { h, s, v }
     } else {
-        ((r - g) / d + 4.0) / 6.0
-    };
-    Hsv { h, s, v }
+        Hsv { h: 0.0, s: 0.0, v }
+    }
 }
 
 pub fn rgb_to_hsl(r: f32, g: f32, b: f32) -> Hsl {
+    let r = r.clamp(0.0, 1.0);
+    let g = g.clamp(0.0, 1.0);
+    let b = b.clamp(0.0, 1.0);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
-    let l = (max + min) * 0.5;
-    let d = max - min;
-    let s = if d <= 0.0 {
-        0.0
-    } else if l < 0.5 {
-        d / (max + min)
+    let l = ((max as f64 + min as f64) / 2.0) as f32;
+    if max == min {
+        return Hsl { h: 0.0, s: 0.0, l };
+    }
+    let delta = max as f64 - min as f64;
+    let s = if l <= 0.5 {
+        (delta / (max as f64 + min as f64)) as f32
     } else {
-        d / (2.0 - max - min)
+        (delta / (2.0 - max as f64 - min as f64)) as f32
     };
-    let h = if d <= 0.0 {
-        0.0
-    } else if max == r {
-        ((g - b) / d).rem_euclid(6.0) / 6.0
-    } else if max == g {
-        ((b - r) / d + 2.0) / 6.0
+    let mut h = if r == max {
+        ((g as f64 - b as f64) / delta) as f32
+    } else if g == max {
+        ((2.0 + (b as f64 - r as f64) / delta)) as f32
     } else {
-        ((r - g) / d + 4.0) / 6.0
+        ((4.0 + (r as f64 - g as f64) / delta)) as f32
     };
+    h = (h as f64 / 6.0) as f32;
+    if h < 0.0 {
+        h = (h as f64 + 1.0) as f32;
+    }
     Hsl { h, s, l }
 }
 
-pub fn hsl_to_rgb(hsl: Hsl) -> RgbaF32 {
-    if hsl.s <= 0.0 {
-        return RgbaF32::new(hsl.l, hsl.l, hsl.l, 1.0);
+fn hsl_value(n1: f64, n2: f64, mut hue: f64) -> f64 {
+    if hue > 6.0 {
+        hue -= 6.0;
+    } else if hue < 0.0 {
+        hue += 6.0;
     }
-    let q = if hsl.l < 0.5 {
-        hsl.l * (1.0 + hsl.s)
+    if hue < 1.0 {
+        n1 + (n2 - n1) * hue
+    } else if hue < 3.0 {
+        n2
+    } else if hue < 4.0 {
+        n1 + (n2 - n1) * (4.0 - hue)
     } else {
-        hsl.l + hsl.s - hsl.l * hsl.s
+        n1
+    }
+}
+
+pub fn hsl_to_rgb(hsl: Hsl) -> RgbaF32 {
+    let h = (hsl.h as f64 - (hsl.h as f64).floor()) as f32;
+    let s = hsl.s.clamp(0.0, 1.0);
+    let l = hsl.l.clamp(0.0, 1.0);
+    if s == 0.0 {
+        return RgbaF32::new(l, l, l, 1.0);
+    }
+    let (m1, m2) = if l <= 0.5 {
+        let m2 = l as f64 * (1.0 + s as f64);
+        (2.0 * l as f64 - m2, m2)
+    } else {
+        let m2 = l as f64 + s as f64 - l as f64 * s as f64;
+        (2.0 * l as f64 - m2, m2)
     };
-    let p = 2.0 * hsl.l - q;
-    let h = hsl.h.rem_euclid(1.0);
-    let to_rgb = |t: f32| {
-        let t = t.rem_euclid(1.0);
-        if t < 1.0 / 6.0 {
-            p + (q - p) * 6.0 * t
-        } else if t < 0.5 {
-            q
-        } else if t < 2.0 / 3.0 {
-            p + (q - p) * (2.0 / 3.0 - t) * 6.0
-        } else {
-            p
-        }
-    };
-    RgbaF32::new(to_rgb(h + 1.0 / 3.0), to_rgb(h), to_rgb(h - 1.0 / 3.0), 1.0)
+    let hue6 = h as f64 * 6.0;
+    RgbaF32::new(
+        hsl_value(m1, m2, hue6 + 2.0) as f32,
+        hsl_value(m1, m2, hue6) as f32,
+        hsl_value(m1, m2, hue6 - 2.0) as f32,
+        1.0,
+    )
 }
 
 pub fn hsv_to_rgb(hsv: Hsv) -> RgbaF32 {
-    let h = (hsv.h.rem_euclid(1.0)) * 6.0;
-    let i = h.floor() as i32;
-    let f = h - i as f32;
-    let p = hsv.v * (1.0 - hsv.s);
-    let q = hsv.v * (1.0 - hsv.s * f);
-    let t = hsv.v * (1.0 - hsv.s * (1.0 - f));
-    let (r, g, b) = match i.rem_euclid(6) {
-        0 => (hsv.v, t, p),
-        1 => (q, hsv.v, p),
-        2 => (p, hsv.v, t),
-        3 => (p, q, hsv.v),
-        4 => (t, p, hsv.v),
-        _ => (hsv.v, p, q),
+    let h = (hsv.h as f64 - (hsv.h as f64).floor()) as f32;
+    let s = hsv.s.clamp(0.0, 1.0);
+    let v = hsv.v.clamp(0.0, 1.0);
+    if s == 0.0 {
+        return RgbaF32::new(v, v, v, 1.0);
+    }
+    let mut hue = h as f64;
+    if hue == 1.0 {
+        hue = 0.0;
+    }
+    hue *= 6.0;
+    let i = hue as i32;
+    let f = hue - i as f64;
+    let s = s as f64;
+    let v = v as f64;
+    let w = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    let (r, g, b) = match i {
+        0 => (v, t, w),
+        1 => (q, v, w),
+        2 => (w, v, t),
+        3 => (w, q, v),
+        4 => (t, w, v),
+        _ => (v, w, q),
     };
-    RgbaF32::new(r, g, b, 1.0)
+    RgbaF32::new(r as f32, g as f32, b as f32, 1.0)
 }
 
 #[cfg(test)]

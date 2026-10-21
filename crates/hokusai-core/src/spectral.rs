@@ -28,11 +28,13 @@ const WGM_EPSILON: f32 = 0.001;
 /// mixing produces the same numerical output as libmypaint's
 /// `fastpow` chain.
 #[inline]
-fn fastlog2(x: f32) -> f32 {
+pub(crate) fn fastlog2(x: f32) -> f32 {
     let vx = x.to_bits();
     let mx = f32::from_bits((vx & 0x007F_FFFF) | 0x3F00_0000);
-    let y = vx as f32 * 1.192_092_9e-7;
-    y - 124.225_52 - 1.498_030_3 * mx - 1.725_88 / (0.352_088_7 + mx)
+    let y = vx as f32 * 1.1920928955078125e-7_f32;
+    y - 124.22551499_f32
+        - 1.498030302_f32 * mx
+        - 1.72587999_f32 / (0.3520887068_f32 + mx)
 }
 
 /// Approximate `2^p` matching libmypaint's `fastpow2`.
@@ -43,8 +45,8 @@ fn fastpow2(p: f32) -> f32 {
     let w = clipp as i32;
     let z = clipp - w as f32 + offset;
     let bits = ((1 << 23) as f32
-        * (clipp + 121.274_055 + 27.728_022 / (4.842_525_7 - z) - 1.490_129_1 * z))
-        as u32;
+        * (clipp + 121.2740575_f32 + 27.7280233_f32 / (4.84252568_f32 - z)
+            - 1.49012907_f32 * z)) as u32;
     f32::from_bits(bits)
 }
 
@@ -55,6 +57,17 @@ fn fastpow2(p: f32) -> f32 {
 #[inline]
 pub fn fastpow(x: f32, p: f32) -> f32 {
     fastpow2(p * fastlog2(x))
+}
+
+/// `fastpow(x, p)` with `fastlog2(x)` precomputed.
+///
+/// Used by the per-pixel pigment blend: the dab's source colour is constant,
+/// so its 10 logarithms can be hoisted out of the pixel loop. The result is
+/// bit-identical to [`fastpow`] because the same `p * log2(x)` product is
+/// evaluated with the same inputs.
+#[inline]
+pub(crate) fn fastpow_from_log(log2_base: f32, p: f32) -> f32 {
+    fastpow2(p * log2_base)
 }
 
 const SPECTRAL_R: [f32; 10] = [
@@ -139,10 +152,12 @@ const T_MATRIX: [[f32; 10]; 3] = [
 /// channels. `WGM_EPSILON` is mixed in to avoid the all-zero / all-one
 /// degenerate cases that `pow(x, fac)` can't handle later.
 pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [f32; 10] {
-    let offset = 1.0 - WGM_EPSILON;
-    let r = r * offset + WGM_EPSILON;
-    let g = g * offset + WGM_EPSILON;
-    let b = b * offset + WGM_EPSILON;
+    let offset = 1.0f32 - WGM_EPSILON;
+    // helpers.c uses the double literal `0.001` here, so the addition runs
+    // in double and is rounded to float on assignment.
+    let r = ((r * offset) as f64 + 0.001) as f32;
+    let g = ((g * offset) as f64 + 0.001) as f32;
+    let b = ((b * offset) as f64 + 0.001) as f32;
     let mut out = [0.0_f32; 10];
     for i in 0..10 {
         out[i] = SPECTRAL_R[i] * r + SPECTRAL_G[i] * g + SPECTRAL_B[i] * b;
@@ -154,16 +169,28 @@ pub fn rgb_to_spectral(r: f32, g: f32, b: f32) -> [f32; 10] {
 /// Negative `T_MATRIX` rows can push the result below `WGM_EPSILON`;
 /// the `(tmp - WGM_EPSILON) / offset` step undoes the upsample epsilon
 /// and clamps the result into `[0, 1]`.
+#[inline]
+fn spectral_out_exact(v: f32) -> f32 {
+    // C computes `float offset = 1.0 - 0.001` (double arithmetic rounded to
+    // float), then `(tmp - 0.001) / offset` promotes both operands to double
+    // before the division. Keeping the float-rounded offset is significant:
+    // using a double 0.999 shifts the result by one ULP.
+    let offset = (1.0f64 - 0.001) as f32 as f64;
+    (((v as f64 - 0.001) / offset).clamp(0.0, 1.0)) as f32
+}
+
 pub fn spectral_to_rgb(spec: &[f32; 10]) -> (f32, f32, f32) {
-    let offset = 1.0 - WGM_EPSILON;
     let mut tmp = [0.0_f32; 3];
     for i in 0..10 {
         tmp[0] += T_MATRIX[0][i] * spec[i];
         tmp[1] += T_MATRIX[1][i] * spec[i];
         tmp[2] += T_MATRIX[2][i] * spec[i];
     }
-    let out = |v: f32| ((v - WGM_EPSILON) / offset).clamp(0.0, 1.0);
-    (out(tmp[0]), out(tmp[1]), out(tmp[2]))
+    (
+        spectral_out_exact(tmp[0]),
+        spectral_out_exact(tmp[1]),
+        spectral_out_exact(tmp[2]),
+    )
 }
 
 /// Port of libmypaint's `mix_colors` (helpers.c) — blends two RGBA
@@ -245,6 +272,100 @@ mod tests {
         }
     }
 
+    /// The AVX2 batch must reproduce the scalar WGM path bit-for-bit.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_mix_matches_scalar_bitwise() {
+        if !avx2_available() {
+            return;
+        }
+        let mut seed = 0x1234_5678u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32
+        };
+        for _ in 0..64 {
+            let src = [next(), next(), next()];
+            let mut log_a = [0.0f32; 10];
+            let spec_a = rgb_to_spectral(src[0], src[1], src[2]);
+            for i in 0..10 {
+                log_a[i] = fastlog2(spec_a[i]);
+            }
+            let mut fac_a = [0.0f32; 8];
+            let mut fac_b = [0.0f32; 8];
+            let mut spec_b = [[0.0f32; 10]; 8];
+            for p in 0..8 {
+                fac_a[p] = next() * 0.5 + 0.3;
+                fac_b[p] = 1.0 - fac_a[p];
+                let dst = [next(), next(), next()];
+                spec_b[p] = rgb_to_spectral(dst[0], dst[1], dst[2]);
+            }
+            let mut channels = [[0.0f32; 8]; 10];
+            for p in 0..8 {
+                for i in 0..10 {
+                    channels[i][p] = spec_b[p][i];
+                }
+            }
+            let (sr, sg, sb) = unsafe { mix_spectral8(&log_a, &fac_a, &fac_b, &channels) };
+            for p in 0..8 {
+                let mut mix = [0.0f32; 10];
+                for i in 0..10 {
+                    mix[i] = fastpow_from_log(log_a[i], fac_a[p]) * fastpow(spec_b[p][i], fac_b[p]);
+                }
+                let (r, g, b) = spectral_to_rgb(&mix);
+                assert_eq!(r.to_bits(), sr[p].to_bits(), "pixel {p} red");
+                assert_eq!(g.to_bits(), sg[p].to_bits(), "pixel {p} green");
+                assert_eq!(b.to_bits(), sb[p].to_bits(), "pixel {p} blue");
+            }
+        }
+    }
+
+    /// eraser-only AVX2 路径必须与标量 WGM 逐位一致。
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn avx2_mix_single_matches_scalar_bitwise() {
+        if !avx2_available() {
+            return;
+        }
+        let mut seed = 0x9E37_79B9u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1 << 24) as f32
+        };
+        for _ in 0..64 {
+            let src = [next(), next(), next()];
+            let mut log_a = [0.0f32; 10];
+            let mut p0 = [0.0f32; 10];
+            let spec_a = rgb_to_spectral(src[0], src[1], src[2]);
+            for i in 0..10 {
+                log_a[i] = fastlog2(spec_a[i]);
+                p0[i] = fastpow_from_log(log_a[i], 0.0);
+            }
+            let mut spec_b = [[0.0f32; 8]; 10];
+            let mut dsts = [[0.0f32; 3]; 8];
+            for p in 0..8 {
+                let dst = [next(), next(), next()];
+                dsts[p] = dst;
+                let spec = rgb_to_spectral(dst[0], dst[1], dst[2]);
+                for i in 0..10 {
+                    spec_b[i][p] = spec[i];
+                }
+            }
+            let (sr, sg, sb) = unsafe { mix_spectral8_single(&p0, &spec_b) };
+            for p in 0..8 {
+                let mut mix = [0.0f32; 10];
+                for i in 0..10 {
+                    mix[i] = p0[i] * fastpow(spec_b[i][p], 1.0);
+                }
+                let (r, g, b) = spectral_to_rgb(&mix);
+                assert_eq!(r.to_bits(), sr[p].to_bits(), "pixel {p} red");
+                assert_eq!(g.to_bits(), sg[p].to_bits(), "pixel {p} green");
+                assert_eq!(b.to_bits(), sb[p].to_bits(), "pixel {p} blue");
+                let _ = dsts[p];
+            }
+        }
+    }
+
     /// Blue + yellow ≈ green (a classic pigment-mixing test). With
     /// fac_a = fac_b = 0.5 the WGM blend should look much more green
     /// than the linear-RGB midpoint would.
@@ -261,4 +382,154 @@ mod tests {
         assert!(g > r, "green {g} should beat red {r}");
         assert!(g > b, "green {g} should beat blue {b}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// AVX2 batch path for the per-pixel pigment blend.
+//
+// The spectral WGM accounts for ~80 % of the rasteriser time on palette-knife
+// dabs. Every per-pixel step is a pure lane-local float operation (mul/add/div
+// and bit casts), so 8 pixels can be evaluated together without changing any
+// rounding: each SIMD instruction applies exactly the scalar operation to its
+// lane. The scalar path stays as the reference (and fallback for non-x86_64 /
+// pre-AVX2 CPUs); a unit test keeps both bit-identical.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub(crate) fn avx2_available() -> bool {
+    std::is_x86_feature_detected!("avx2")
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fastlog2_8(x: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
+    use std::arch::x86_64::*;
+    let vx = _mm256_castps_si256(x);
+    let mant = _mm256_and_si256(vx, _mm256_set1_epi32(0x007F_FFFF));
+    let mx = _mm256_castsi256_ps(_mm256_or_si256(mant, _mm256_set1_epi32(0x3F00_0000)));
+    let y = _mm256_mul_ps(_mm256_cvtepi32_ps(vx), _mm256_set1_ps(1.1920928955078125e-7));
+    let t = _mm256_sub_ps(
+        _mm256_sub_ps(y, _mm256_set1_ps(124.22551499)),
+        _mm256_mul_ps(_mm256_set1_ps(1.498030302), mx),
+    );
+    _mm256_sub_ps(
+        t,
+        _mm256_div_ps(
+            _mm256_set1_ps(1.72587999),
+            _mm256_add_ps(_mm256_set1_ps(0.3520887068), mx),
+        ),
+    )
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn fastpow2_8(p: std::arch::x86_64::__m256) -> std::arch::x86_64::__m256 {
+    use std::arch::x86_64::*;
+    let zero = _mm256_setzero_ps();
+    let offset = _mm256_and_ps(_mm256_cmp_ps::<_CMP_LT_OQ>(p, zero), _mm256_set1_ps(1.0));
+    let clipp = _mm256_max_ps(p, _mm256_set1_ps(-126.0));
+    let w = _mm256_cvttps_epi32(clipp);
+    let z = _mm256_add_ps(_mm256_sub_ps(clipp, _mm256_cvtepi32_ps(w)), offset);
+    let denom = _mm256_sub_ps(_mm256_set1_ps(4.84252568), z);
+    let inner = _mm256_sub_ps(
+        _mm256_add_ps(
+            _mm256_add_ps(clipp, _mm256_set1_ps(121.2740575)),
+            _mm256_div_ps(_mm256_set1_ps(27.7280233), denom),
+        ),
+        _mm256_mul_ps(_mm256_set1_ps(1.49012907), z),
+    );
+    let bitsf = _mm256_max_ps(_mm256_mul_ps(_mm256_set1_ps((1 << 23) as f32), inner), zero);
+    _mm256_castsi256_ps(_mm256_cvttps_epi32(bitsf))
+}
+
+/// `color_a == 0` 的 eraser-only WGM：源色项恒为 `spec_a^0`（常量）。
+///
+/// 每通道只剩 `spec_b^1` 一侧；与 [`mix_spectral8`] 使用相同的
+/// lane-wise fastlog/fastpow，因此结果与标量
+/// `fastpow_from_log(log_a, 0) * fastpow(spec_b, 1)` 逐位一致。
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn mix_spectral8_single(
+    spec_a_zero_pow: &[f32; 10],
+    spec_b: &[[f32; 8]; 10],
+) -> ([f32; 8], [f32; 8], [f32; 8]) {
+    use std::arch::x86_64::*;
+    let mut tmp0 = _mm256_setzero_ps();
+    let mut tmp1 = _mm256_setzero_ps();
+    let mut tmp2 = _mm256_setzero_ps();
+    for i in 0..10 {
+        let lb = fastlog2_8(_mm256_loadu_ps(spec_b[i].as_ptr()));
+        let pb = fastpow2_8(lb);
+        let mix = _mm256_mul_ps(_mm256_set1_ps(spec_a_zero_pow[i]), pb);
+        tmp0 = _mm256_add_ps(tmp0, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[0][i]), mix));
+        tmp1 = _mm256_add_ps(tmp1, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[1][i]), mix));
+        tmp2 = _mm256_add_ps(tmp2, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[2][i]), mix));
+    }
+    let mut t0 = [0.0f32; 8];
+    let mut t1 = [0.0f32; 8];
+    let mut t2 = [0.0f32; 8];
+    _mm256_storeu_ps(t0.as_mut_ptr(), tmp0);
+    _mm256_storeu_ps(t1.as_mut_ptr(), tmp1);
+    _mm256_storeu_ps(t2.as_mut_ptr(), tmp2);
+    let mut r = [0.0f32; 8];
+    let mut g = [0.0f32; 8];
+    let mut b = [0.0f32; 8];
+    for lane in 0..8 {
+        // The C downsampler promotes to double; do it per lane so the
+        // SIMD path stays bit-identical to the scalar reference.
+        r[lane] = spectral_out_exact(t0[lane]);
+        g[lane] = spectral_out_exact(t1[lane]);
+        b[lane] = spectral_out_exact(t2[lane]);
+    }
+    (r, g, b)
+}
+
+/// Evaluate the WGM pigment mix for eight pixels at once.
+///
+/// * `log_a` — `fastlog2(spec_a)` for the (constant) dab colour.
+/// * `fac_a` / `fac_b` — per-pixel alpha weights.
+/// * `spec_b[i][px]` — destination spectral reflectance, channel-major.
+///
+/// Returns straight linear sRGB for the eight lanes.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+pub(crate) unsafe fn mix_spectral8(
+    log_a: &[f32; 10],
+    fac_a: &[f32; 8],
+    fac_b: &[f32; 8],
+    spec_b: &[[f32; 8]; 10],
+) -> ([f32; 8], [f32; 8], [f32; 8]) {
+    use std::arch::x86_64::*;
+    let fa = _mm256_loadu_ps(fac_a.as_ptr());
+    let fb = _mm256_loadu_ps(fac_b.as_ptr());
+    let mut tmp0 = _mm256_setzero_ps();
+    let mut tmp1 = _mm256_setzero_ps();
+    let mut tmp2 = _mm256_setzero_ps();
+    for i in 0..10 {
+        let pa = fastpow2_8(_mm256_mul_ps(fa, _mm256_set1_ps(log_a[i])));
+        let lb = fastlog2_8(_mm256_loadu_ps(spec_b[i].as_ptr()));
+        let pb = fastpow2_8(_mm256_mul_ps(fb, lb));
+        let mix = _mm256_mul_ps(pa, pb);
+        tmp0 = _mm256_add_ps(tmp0, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[0][i]), mix));
+        tmp1 = _mm256_add_ps(tmp1, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[1][i]), mix));
+        tmp2 = _mm256_add_ps(tmp2, _mm256_mul_ps(_mm256_set1_ps(T_MATRIX[2][i]), mix));
+    }
+    let mut t0 = [0.0f32; 8];
+    let mut t1 = [0.0f32; 8];
+    let mut t2 = [0.0f32; 8];
+    _mm256_storeu_ps(t0.as_mut_ptr(), tmp0);
+    _mm256_storeu_ps(t1.as_mut_ptr(), tmp1);
+    _mm256_storeu_ps(t2.as_mut_ptr(), tmp2);
+    let mut r = [0.0f32; 8];
+    let mut g = [0.0f32; 8];
+    let mut b = [0.0f32; 8];
+    for lane in 0..8 {
+        // The C downsampler promotes to double; do it per lane so the
+        // SIMD path stays bit-identical to the scalar reference.
+        r[lane] = spectral_out_exact(t0[lane]);
+        g[lane] = spectral_out_exact(t1[lane]);
+        b[lane] = spectral_out_exact(t2[lane]);
+    }
+    (r, g, b)
 }

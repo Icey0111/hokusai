@@ -16,6 +16,7 @@ fn red_dab(x: f32, y: f32, radius: f32) -> Dab {
         color: RgbaF32::new(1.0, 0.0, 0.0, 1.0),
         opaque: 1.0,
         hardness: 1.0, // solid disk so the center pixel is fully red
+        softness: 0.0,
         alpha_eraser: 1.0,
         aspect_ratio: 1.0,
         angle: 0.0,
@@ -47,6 +48,29 @@ fn solid_red_dab_paints_center_red() {
         center[3] > fix15::FIX15_MAX_U16 - 100,
         "alpha = {}",
         center[3]
+    );
+}
+
+#[test]
+fn softness_one_is_a_no_op() {
+    let mut s = MemSurface::new();
+    let mut dab = red_dab(32.0, 32.0, 5.0);
+    dab.softness = 1.0;
+    assert!(!s.draw_dab(&dab), "softness=1.0 must reject the dab");
+    assert_eq!(s.tile_count(), 0, "softness=1.0 must not allocate a tile");
+}
+
+#[test]
+fn softness_reduces_center_opacity() {
+    let mut s = MemSurface::new();
+    let mut dab = red_dab(32.0, 32.0, 5.0);
+    dab.softness = 0.5;
+    s.draw_dab(&dab);
+    let center = s.tile(0, 0).expect("tile")[32][32];
+    assert!(
+        center[0] > 0 && center[0] < fix15::FIX15_MAX_U16 - 100,
+        "softness=0.5 should halve the mask, got {}",
+        center[0]
     );
 }
 

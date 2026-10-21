@@ -58,13 +58,12 @@ fn apply_libmypaint_defaults(brush: &mut Brush) {
         (GridmapScaleX, 1.0),
         (GridmapScaleY, 1.0),
         (PosterizeNum, 0.05),
-        // libmypaint v1.6.1's compiled default for PAINT_MODE is 0.0,
-        // NOT the 1.0 the current master brushsettings.json shows
-        // (the JSON was bumped post-v1.6.1 but our reference dylib
-        // uses the older C-side `setting_info()->def` of 0.0). Tracing
-        // an imp_details stroke through libmypaint shows paint=0.00
-        // on every dab — proof the runtime default is 0, not 1.
-        (Paint, 0.0),
+        // MyPaint 2.x's brushsettings.json default is 1.0. The application
+        // layer may override this to the setting's minimum (0.0) when
+        // `pigment_on_by_default` is off; `parse_brush_json_with_default`
+        // handles that case. Keeping 1.0 here matches a standalone
+        // libmypaint 2.x brush with no application compat policy.
+        (Paint, 1.0),
     ];
     for (setting, def) in DEFAULTS {
         if brush.get(*setting).base_value == 0.0
@@ -192,11 +191,11 @@ pub fn from_str(json: &str) -> Result<Brush, Error> {
 pub fn to_string_pretty(brush: &Brush) -> Result<String, Error> {
     let mut settings = BTreeMap::new();
     for (i, sv) in brush.settings().iter().enumerate() {
-        // Skip wholly-default settings to keep output compact, matching
-        // libmypaint's behaviour of only writing non-default keys.
-        if sv.base_value == 0.0 && sv.inputs.is_empty() && sv.unknown_inputs.is_empty() {
-            continue;
-        }
+        // MyPaint's `BrushInfo.to_json()` writes every setting, including
+        // defaults. Keeping explicit zeros is required for round-tripping
+        // e.g. `opaque_multiply = 0` (which otherwise reloads as the
+        // pressure-curve default) and for byte-level compatibility with
+        // brushes saved by MyPaint itself.
         let setting = BrushSetting::ALL[i];
         let mut inputs: BTreeMap<String, Vec<[f32; 2]>> = sv
             .inputs
@@ -333,5 +332,28 @@ mod tests {
         assert_eq!(b.get(BrushSetting::Opaque), b2.get(BrushSetting::Opaque));
         assert_eq!(b.get(BrushSetting::Radius), b2.get(BrushSetting::Radius));
         assert_eq!(b.comment, b2.comment);
+    }
+
+    #[test]
+    fn explicit_opaque_multiply_zero_roundtrips() {
+        // The serializer used to omit every setting whose base value was 0
+        // and had no inputs. That turned an explicit "do not paint" zero
+        // into the default pressure curve on reload. MyPaint writes all
+        // settings, so an explicit zero must survive.
+        let json = r#"{
+            "version": 3,
+            "settings": {
+                "opaque": { "base_value": 1.0 },
+                "opaque_multiply": { "base_value": 0.0 }
+            }
+        }"#;
+        let b = from_str(json).unwrap();
+        assert_eq!(b.get(BrushSetting::OpaqueMultiply).base_value, 0.0);
+        assert!(b.get(BrushSetting::OpaqueMultiply).inputs.is_empty());
+
+        let out = to_string_pretty(&b).unwrap();
+        let b2 = from_str(&out).unwrap();
+        assert_eq!(b2.get(BrushSetting::OpaqueMultiply).base_value, 0.0);
+        assert!(b2.get(BrushSetting::OpaqueMultiply).inputs.is_empty());
     }
 }

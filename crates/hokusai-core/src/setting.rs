@@ -108,6 +108,9 @@ define_settings! {
     GridmapScale                 => "gridmap_scale",
     GridmapScaleX                => "gridmap_scale_x",
     GridmapScaleY                => "gridmap_scale_y",
+    // MyPaint 2.0 additions. Appended to keep every pre-existing index stable.
+    Softness                     => "softness",
+    SmudgeBucket                 => "smudge_bucket",
 }
 
 impl fmt::Display for BrushSetting {

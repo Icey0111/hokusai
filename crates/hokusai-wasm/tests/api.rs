@@ -12,6 +12,8 @@ const MINIMAL_BRUSH: &str = r#"{
     "version": 3,
     "settings": {
         "opaque": { "base_value": 1.0 },
+        "opaque_multiply": { "base_value": 1.0 },
+        "paint_mode": { "base_value": 1.0 },
         "hardness": { "base_value": 0.5 },
         "radius_logarithmic": { "base_value": 2.0 },
         "dabs_per_actual_radius": { "base_value": 2.0 }
@@ -55,11 +57,15 @@ fn first_stroke_event_seeds_no_pixels() {
 }
 
 #[test]
-fn two_events_paint_pixels() {
+fn third_event_paints_pixels() {
     let mut brush = HokusaiBrush::new(MINIMAL_BRUSH).unwrap();
     brush.set_color_hsv(0.0, 0.0, 0.0);
     let mut c = HokusaiCanvas::new(64, 64);
+    // libmypaint's first event resets/seeds state without dabs, and the
+    // following event only commits DABS_PER_* before any dab can be counted.
+    // A visible dab therefore needs the third event.
     c.stroke_to(&brush, 10.0, 32.0, 1.0, 0.0, 0.0, 0.01);
+    c.stroke_to(&brush, 30.0, 32.0, 1.0, 0.0, 0.0, 0.01);
     c.stroke_to(&brush, 50.0, 32.0, 1.0, 0.0, 0.0, 0.01);
     let px = c.pixels();
     // At least one pixel should be non-white.
@@ -94,6 +100,8 @@ fn tilt_arguments_accepted_and_affect_output() {
         "version": 3,
         "settings": {
             "opaque": { "base_value": 1.0 },
+            "opaque_multiply": { "base_value": 1.0 },
+            "paint_mode": { "base_value": 1.0 },
             "hardness": { "base_value": 1.0 },
             "radius_logarithmic": { "base_value": 2.0 },
             "dabs_per_actual_radius": { "base_value": 2.0 },
@@ -108,10 +116,12 @@ fn tilt_arguments_accepted_and_affect_output() {
 
     let mut a = HokusaiCanvas::new(80, 80);
     a.stroke_to(&brush, 20.0, 40.0, 1.0, 1.0, 0.0, 0.01);
+    a.stroke_to(&brush, 40.0, 40.0, 1.0, 1.0, 0.0, 0.01);
     a.stroke_to(&brush, 60.0, 40.0, 1.0, 1.0, 0.0, 0.01);
 
     let mut b = HokusaiCanvas::new(80, 80);
     b.stroke_to(&brush, 20.0, 40.0, 1.0, 0.0, 1.0, 0.01);
+    b.stroke_to(&brush, 40.0, 40.0, 1.0, 0.0, 1.0, 0.01);
     b.stroke_to(&brush, 60.0, 40.0, 1.0, 0.0, 1.0, 0.01);
 
     let pa = a.pixels();

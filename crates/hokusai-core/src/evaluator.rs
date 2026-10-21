@@ -69,12 +69,42 @@ pub fn evaluate(brush: &Brush, inputs: &InputValues) -> SettingValues {
     let mut out = SettingValues::new();
     for (i, sv) in brush.settings().iter().enumerate() {
         let mut v = sv.base_value;
-        for m in &sv.inputs {
-            v += m.eval(inputs.get(m.input));
+        if sv.inputs.len() <= 1 {
+            for m in &sv.inputs {
+                v += m.eval(inputs.get(m.input));
+            }
+        } else {
+            // libmypaint sums a setting's mappings in input-enum order
+            // (`for j in 0..inputs`), not in file order, and f32 addition
+            // is not associative. Slot by enum index to match.
+            let mut slots: [Option<&crate::mapping::InputMapping>; NUM_INPUTS] =
+                [None; NUM_INPUTS];
+            for m in &sv.inputs {
+                slots[m.input.libmypaint_index()] = Some(m);
+            }
+            for m in slots.iter().flatten() {
+                v += m.eval(inputs.get(m.input));
+            }
         }
         out.values[i] = v;
+        if i == crate::BrushSetting::EllipticalDabAngle.index() && trace_eval() {
+            eprintln!(
+                "EVAL ang={:08x} dir={:08x} rnd={:08x} st={:08x} s2={:08x}",
+                v.to_bits(),
+                inputs.get(BrushInput::Direction).to_bits(),
+                inputs.get(BrushInput::Random).to_bits(),
+                inputs.get(BrushInput::Stroke).to_bits(),
+                inputs.get(BrushInput::Speed2).to_bits(),
+            );
+        }
     }
     out
+}
+
+fn trace_eval() -> bool {
+    use std::sync::OnceLock;
+    static TRACE: OnceLock<bool> = OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var("HOKUSAI_TRACE_EVAL").is_ok())
 }
 
 #[cfg(test)]

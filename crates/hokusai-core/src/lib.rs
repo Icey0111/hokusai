@@ -27,6 +27,6 @@ pub use brush::Brush;
 pub use input::{BrushInput, NUM_INPUTS};
 pub use mapping::{InputMapping, SettingValue};
 pub use setting::{BrushSetting, NUM_SETTINGS};
-pub use state::BrushState;
-pub use surface::{Dab, TiledSurface};
+pub use state::{BrushState, BrushStateField, SmudgeBucket, NUM_SMUDGE_BUCKETS};
+pub use surface::{Dab, DeferredSmudge, TiledSurface};
 pub use tile::{TilePixels, TILE_SIZE};
