@@ -24,7 +24,8 @@ upstreaming these fixes to reearth/hokusai.
   the linear-sRGB colour chain, `softness`, stroke splitting, tablet `dtime`
   warm-up, RNG persistence across strokes, `DABS_PER_*` evaluation order, signed
   `radius_by_random`, `tilt_declinationx/y` defaults, and the remaining items
-  listed in `mypaint-rs/ENGINE_PORT_AUDIT.md`.
+  listed in `docs/ENGINE_PORT_AUDIT.md` of
+  [mypaint-rs](https://github.com/Icey0111/mypaint-rs).
 - `crates/hokusai-compat/cref/`: a differential gate that renders the same `.myb`
   + event stream through the real libmypaint C engine and through the Rust CPU
   path, then compares RGBA u16 fix15 output byte for byte.
