@@ -45,28 +45,48 @@ export LIBMYPAINT_DIR=/path/to/libmypaint CREF_OUT_DIR=/path/to/out
 bash  crates/hokusai-compat/cref/build_ref.sh
 cargo build --release -p hokusai-compat --bin dump_fix15
 
-# 2. a script is just { width, height, events[] } — see gen_inputs.py
+# 2. the shared event stream is committed: scripts/brushes196.json
 python crates/hokusai-compat/cref/diff_gate.py \
   --brushes /path/to/mypaint-brushes/brushes \
-  --script  script.json --work workdir \
+  --script  crates/hokusai-compat/cref/scripts/brushes196.json \
+  --work workdir \
   --ref  "$CREF_OUT_DIR/ref_runner.exe" \
   --rust target/release/dump_fix15.exe \
   --tolerance 0 --markdown gate.md
 ```
 
-## Snapshot (2026-10-21, libmypaint `d5a88fb`, 56 events / 512×256)
+## Snapshot (2026-10-21, libmypaint `d5a88f`, `scripts/brushes196.json`)
 
 | Scope | bit-identical | differs | errors |
 |---|---|---|---|
-| `hokusai-compat` fixtures | 9 / 9 | 0 | 0 |
-| official brush pack | 144 / 196 | 52 | 0 |
+| official brush pack | 194 / 196 | 2 | 0 |
 
-Of the 52 diverging brushes: 32 max out at ≤2 LSB (mostly alpha, from
-state-filter and float last-bit effects), 20 exceed 2 LSB and cluster in the
-smudge / watercolor / oil / acrylic / scatter families, where per-dab state
-(`partial_dabs`, speed filters) diverges by 1 ULP and then amplifies. 12 brushes
-using `surfacemap_x/y` are skipped and recorded: that key is not a libmypaint
-input and the reference asserts on it.
+The two remaining brushes: `puantilism2.myb` (715 values differ, max 3 LSB) and
+`Fan#1.myb` (6 values, max 10 LSB).
+
+Run with both reference binaries on this machine — MinGW `gcc -O2` and MSVC
+`cl /O2` — and the outcome is identical: same 194, same two brushes, same
+magnitudes. So the numbers are not an artefact of one compiler's float
+behaviour.
+
+What the snapshot does **not** cover — read this before quoting 194/196:
+
+- **Events carry tilt, viewzoom, viewrotation and barrel at their defaults.**
+  `scripts/brushes196.json` uses 4-field events (`x, y, pressure, dt`), and
+  `gen_inputs.py` fills in `xtilt = ytilt = 0`, `viewzoom = 1.0`,
+  `viewrotation = 0`, `barrel = 0`, `linear = 1`. Every brush dynamic driven by
+  tilt, canvas zoom or canvas rotation is therefore *untested* by this script.
+  Adding 10-field event streams that sweep those inputs is the highest-value
+  extension.
+- **One trajectory, one pressure ramp, 56 events, 512×256.** Dab spacing,
+  speed-filter and `partial_dabs` behaviour are exercised only along that path.
+- **The `hokusai-compat` fixture PNG goldens are self-generated** (see
+  `src/lib.rs`, "Path to true libmypaint parity"), so the ordinary
+  `cargo test -p hokusai-compat` run detects regressions, not parity. The C
+  gate above is the only parity evidence here.
+- The 12 brushes that use `surfacemap_x/y` are included, not skipped: those keys
+  are not libmypaint inputs, and both sides ignore unknown inputs, so they
+  compare equal rather than being tested.
 
 **These are one script's numbers.** They are a bisectable baseline, not a proof
 over the whole event space — the point of the gate is that any change to the

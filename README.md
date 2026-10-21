@@ -95,32 +95,34 @@ MinGW, `build_ref_msvc.bat` for MSVC), renders the same `.myb` + same event
 stream through C `ref_runner` and Rust `dump_fix15`, and compares RGBA u16 fix15
 output **byte for byte** (tolerance 0).
 
-Snapshot 2026-10-21, libmypaint `d5a88fb`, one standard script (56 events,
-pressure ramp over a sine path, 512×256):
+Snapshot 2026-10-21, libmypaint `d5a88f`, the committed event stream
+[`cref/scripts/brushes196.json`](crates/hokusai-compat/cref/scripts/brushes196.json)
+(56 events, pressure ramp over a sine path, 512×256):
 
 | Scope | bit-identical | differs | errors |
 |---|---|---|---|
-| `hokusai-compat` fixtures | 9 / 9 | 0 | 0 |
-| official brush pack | 144 / 196 | 52 | 0 |
+| official brush pack | 194 / 196 | 2 | 0 |
 
-Of the 52: 32 have a max difference of ≤2 LSB (mostly alpha; state-filter and
-float last-bit effects), 20 exceed 2 LSB and cluster in the smudge / watercolor /
-oil / acrylic / scatter families, where per-dab state (`partial_dabs`, speed
-filters) diverges by 1 ULP and then amplifies. 12 brushes that use
-`surfacemap_x/y` are skipped and recorded: those keys are not libmypaint inputs
-and the reference asserts on them.
+The two exceptions are `puantilism2.myb` (715 values, max 3 LSB) and `Fan#1.myb`
+(6 values, max 10 LSB). Building the reference with MinGW `gcc -O2` and with MSVC
+`cl /O2` gives the same 194 and the same two brushes, so this is not one
+compiler's float behaviour.
 
-These are **one script's numbers**, not a proof over the whole event space — they
-are meant to make "how far are we from upstream C" reproducible and bisectable.
+**Scope limit, worth reading before quoting 194/196:** those events are 4-field
+(`x, y, pressure, dt`), so `gen_inputs.py` feeds tilt = 0, viewzoom = 1.0,
+viewrotation = 0, barrel = 0. Brush dynamics driven by pen tilt or canvas
+zoom/rotation are not exercised by this script, and neither is any trajectory
+but this one. Sweeping the 10-field event form is the obvious next step.
 
 ```sh
-# from the workspace root, with a libmypaint checkout at ../_libmypaint_ref
+# from the workspace root, with a libmypaint checkout next to it (or set LIBMYPAINT_DIR)
 bash  crates/hokusai-compat/cref/build_ref.sh
 cargo build --release -p hokusai-compat --bin dump_fix15
 python crates/hokusai-compat/cref/diff_gate.py \
-  --brushes <brush-pack>/brushes --script <script>.json --work <workdir> \
-  --ref <ref_runner.exe> --rust target/release/dump_fix15.exe \
-  --tolerance 0 --markdown gate.md
+  --brushes <brush-pack>/brushes \
+  --script  crates/hokusai-compat/cref/scripts/brushes196.json \
+  --work <workdir> --ref <ref_runner.exe> \
+  --rust target/release/dump_fix15.exe --tolerance 0 --markdown gate.md
 ```
 
 ## Features
