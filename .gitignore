@@ -11,3 +11,5 @@ Cargo.lock
 /tmp/
 tmp/
 .claude/
+__pycache__/
+*.pyc
