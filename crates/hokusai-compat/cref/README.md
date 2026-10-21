@@ -60,9 +60,22 @@ python crates/hokusai-compat/cref/diff_gate.py \
 | Scope | bit-identical | differs | errors |
 |---|---|---|---|
 | official brush pack | 194 / 196 | 2 | 0 |
+| the 9 `hokusai-compat` fixture scripts, each with its own event stream | 9 / 9 | 0 | 0 |
 
-The two remaining brushes: `puantilism2.myb` (715 values differ, max 3 LSB) and
-`Fan#1.myb` (6 values, max 10 LSB).
+The two remaining brushes: `puantilism2.myb` (715 values differ, max 3 LSB —
+pure eraser dabs, alpha matches exactly, only the spectral erasing of RGB
+differs) and `Fan#1.myb` (6 values, max 10 LSB).
+
+Reproduce the brush-pack run with the command above, and the fixture run with:
+
+```sh
+python crates/hokusai-compat/cref/fixture_gate.py \
+  --fixtures crates/hokusai-compat/fixtures --work /tmp/fg \
+  --ref "$CREF_OUT_DIR/ref_runner.exe" --rust target/release/dump_fix15.exe
+```
+
+`fixture_gate.py` exits non-zero unless every fixture is bit-identical, so it
+can be wired into CI.
 
 Run with both reference binaries on this machine — MinGW `gcc -O2` and MSVC
 `cl /O2` — and the outcome is identical: same 194, same two brushes, same
@@ -80,10 +93,10 @@ What the snapshot does **not** cover — read this before quoting 194/196:
   extension.
 - **One trajectory, one pressure ramp, 56 events, 512×256.** Dab spacing,
   speed-filter and `partial_dabs` behaviour are exercised only along that path.
-- **The `hokusai-compat` fixture PNG goldens are self-generated** (see
-  `src/lib.rs`, "Path to true libmypaint parity"), so the ordinary
-  `cargo test -p hokusai-compat` run detects regressions, not parity. The C
-  gate above is the only parity evidence here.
+- **The `hokusai-compat` PNG goldens are still self-generated** (see
+  `src/lib.rs`, "Path to true libmypaint parity"), so `cargo test -p
+  hokusai-compat` detects regressions, not parity. The fixture *scripts* above
+  are what this gate compares against C; the PNG snapshots are not evidence.
 - The 12 brushes that use `surfacemap_x/y` are included, not skipped: those keys
   are not libmypaint inputs, and both sides ignore unknown inputs, so they
   compare equal rather than being tested.

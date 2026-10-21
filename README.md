@@ -102,6 +102,7 @@ Snapshot 2026-10-21, libmypaint `d5a88f`, the committed event stream
 | Scope | bit-identical | differs | errors |
 |---|---|---|---|
 | official brush pack | 194 / 196 | 2 | 0 |
+| the 9 `hokusai-compat` fixture scripts (own event streams) | 9 / 9 | 0 | 0 |
 
 The two exceptions are `puantilism2.myb` (715 values, max 3 LSB) and `Fan#1.myb`
 (6 values, max 10 LSB). Building the reference with MinGW `gcc -O2` and with MSVC
